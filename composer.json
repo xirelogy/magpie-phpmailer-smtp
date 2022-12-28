@@ -1,0 +1,28 @@
+{
+  "name": "xirelogy/magpie-phpmailer-smtp",
+  "description": "SMTP provider using PHP-mailer",
+  "type": "library",
+  "license": "MIT",
+  "authors": [
+    {
+      "name": "JingXiang Tou",
+      "email": "jx@tou.st"
+    }
+  ],
+  "require": {
+    "xirelogy/magpie-core": "^0.1",
+    "phpmailer/phpmailer": "^6.6"
+  },
+  "autoload": {
+    "psr-4": {
+      "MagpieLib\\PhpMailerSmtp\\": "src"
+    }
+  },
+  "extra": {
+    "magpie": {
+      "classes": [
+        "MagpieLib\\PhpMailerSmtp\\PhpMailerClient"
+      ]
+    }
+  }
+}
