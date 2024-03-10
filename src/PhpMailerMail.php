@@ -2,8 +2,10 @@
 
 namespace MagpieLib\PhpMailerSmtp;
 
-use Exception;
 use Magpie\Exceptions\OperationFailedException;
+use Magpie\Exceptions\PersistenceException;
+use Magpie\Exceptions\SafetyCommonException;
+use Magpie\Exceptions\StreamException;
 use Magpie\Exceptions\UnsupportedValueException;
 use Magpie\Facades\Smtp\HtmlMailBody;
 use Magpie\Facades\Smtp\MailBody;
@@ -17,6 +19,8 @@ use Magpie\Facades\Smtp\SmtpSentMail;
 use Magpie\General\Concepts\BinaryDataProvidable;
 use Magpie\General\Contents\BinaryContent;
 use Magpie\Logs\Concepts\Loggable;
+use MagpieLib\PhpMailerSmtp\Exceptions\PhpMailerSendOperationFailedException;
+use MagpieLib\PhpMailerSmtp\Impls\ErrorHandling;
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\SMTP;
 
@@ -39,7 +43,7 @@ abstract class PhpMailerMail extends SmtpMail
      * Constructor
      * @param SmtpClientConfig $config
      * @param Loggable|null $logger
-     * @throws Exception
+     * @throws SafetyCommonException
      */
     protected function __construct(SmtpClientConfig $config, ?Loggable $logger)
     {
@@ -92,7 +96,7 @@ abstract class PhpMailerMail extends SmtpMail
      */
     public function withSender(string $email, ?string $name = null) : static
     {
-        static::ensureSuccessful($this->mailer->setFrom($email, $name ?? ''));
+        static::ensureRunSuccessful(fn () => $this->mailer->setFrom($email, $name ?? ''));
         return $this;
     }
 
@@ -104,13 +108,13 @@ abstract class PhpMailerMail extends SmtpMail
     {
         switch ($type) {
             case SmtpRecipientType::TO:
-                static::ensureSuccessful($this->mailer->addAddress($email, $name));
+                static::ensureRunSuccessful(fn () => $this->mailer->addAddress($email, $name));
                 break;
             case SmtpRecipientType::CC:
-                static::ensureSuccessful($this->mailer->addCC($email, $name));
+                static::ensureRunSuccessful(fn () => $this->mailer->addCC($email, $name));
                 break;
             case SmtpRecipientType::BCC:
-                static::ensureSuccessful($this->mailer->addBCC($email, $name));
+                static::ensureRunSuccessful(fn () => $this->mailer->addBCC($email, $name));
                 break;
             default:
                 throw new UnsupportedValueException($type, _l('recipient type'));
@@ -155,16 +159,21 @@ abstract class PhpMailerMail extends SmtpMail
      */
     public function withAttachment(BinaryDataProvidable $content) : static
     {
-        $content = BinaryContent::getFileSystemAccessible($content, $isReleasable);
+        try {
+            $content = BinaryContent::getFileSystemAccessible($content, $isReleasable);
+        } catch (PersistenceException|StreamException $ex) {
+            throw new OperationFailedException(previous: $ex);
+        }
         $fileSystemPath = $content->getFileSystemPath();
 
-        $result = $this->mailer->addAttachment(
-            $fileSystemPath,
-            $content->getFilename() ?? '',
-            PHPMailer::ENCODING_BASE64,
-            $content->getMimeType() ?? '',
-        );
-        static::ensureSuccessful($result);
+        static::ensureRunSuccessful(function () use ($fileSystemPath, $content) {
+            return $this->mailer->addAttachment(
+                $fileSystemPath,
+                $content->getFilename() ?? '',
+                PHPMailer::ENCODING_BASE64,
+                $content->getMimeType() ?? '',
+            );
+        });
 
         if ($isReleasable) $this->releasedAfterSent->addIfReleasable($content);
         return $this;
@@ -176,9 +185,8 @@ abstract class PhpMailerMail extends SmtpMail
      */
     protected function onSend() : SmtpSentMail
     {
-        if (!$this->mailer->send()) {
-            throw new Exception($this->mailer->ErrorInfo);
-        }
+        $isSent = ErrorHandling::protectedRun(fn () => $this->mailer->send());
+        if (!$isSent) throw new PhpMailerSendOperationFailedException($this->mailer->ErrorInfo);
 
         return new class($this->mailer) extends PhpMailerSentMail {
             /**
@@ -208,14 +216,17 @@ abstract class PhpMailerMail extends SmtpMail
     }
 
 
+
     /**
-     * Ensure the return result means successful
-     * @param bool $result
+     * Ensure the return result for the target execution means successful
+     * @param callable():bool $fn
      * @return void
-     * @throws OperationFailedException
+     * @throws SafetyCommonException
      */
-    protected static function ensureSuccessful(bool $result) : void
+    protected static function ensureRunSuccessful(callable $fn) : void
     {
+        $result = ErrorHandling::protectedRun($fn);
+
         if (!$result) throw new OperationFailedException();
     }
 }
